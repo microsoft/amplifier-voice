@@ -745,7 +745,7 @@ body {
       // Step 1: Fetch ephemeral token from backend
       let token;
       try {
-        const resp = await fetch('/apps/voice/session');
+        const resp = await fetch('/voice/session');
         if (!resp.ok) throw new Error(`Session token fetch failed: ${resp.status}`);
         const data = await resp.json();
         token = data.value;
@@ -908,7 +908,7 @@ body {
       // POST SDP offer to backend, get SDP answer
       let sdpAnswer;
       try {
-        const sdpResp = await fetch('/apps/voice/sdp', {
+        const sdpResp = await fetch('/voice/sdp', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/sdp',
@@ -1263,7 +1263,7 @@ body {
         // NOTE: server reads body.get("name"), not "tool_name"
         let output;
         try {
-          const resp = await fetch('/apps/voice/tools/execute', {
+          const resp = await fetch('/voice/tools/execute', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1632,7 +1632,7 @@ body {
     const delegationAgentRef  = useRef(null);
 
     useEffect(() => {
-      const es = new EventSource('/apps/voice/events');
+      const es = new EventSource('/voice/events');
 
       es.onmessage = (event) => {
         let msg;
@@ -1713,7 +1713,7 @@ body {
 
   // -------------------------------------------------------------------------
   // SessionPicker({ onResume })   Task 5.6
-  // Fetches /apps/voice/sessions, shows the last 5 with a Resume button
+  // Fetches /voice/sessions, shows the last 5 with a Resume button
   // (purple) for sessions that have not ended.
   // Returns null when there are no sessions.
   // -------------------------------------------------------------------------
@@ -1722,7 +1722,7 @@ body {
     const [sessions, setSessions] = useState(null);
 
     useEffect(() => {
-      fetch('/apps/voice/sessions')
+      fetch('/voice/sessions')
         .then((r) => r.json())
         .then((data) => {
           const list = Array.isArray(data) ? data : (data.sessions || []);
@@ -1796,7 +1796,7 @@ body {
 
       setCancelling(true);
       try {
-        await fetch('/apps/voice/cancel', {
+        await fetch('/voice/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sessionId, immediate }),
@@ -1883,7 +1883,7 @@ body {
     // Task 5.4: fetch assistant name on mount (default: 'Amplifier')
     const [assistantName, setAssistantName] = useState('Amplifier');
     useEffect(() => {
-      fetch('/apps/voice/api/status')
+      fetch('/voice/api/status')
         .then((r) => r.json())
         .then((data) => { if (data.assistant_name) setAssistantName(data.assistant_name); })
         .catch(() => { /* silent — keep default 'Amplifier' */ });
@@ -2053,7 +2053,7 @@ body {
       const unsynced = allEntries.slice(syncedCountRef.current);
       if (unsynced.length === 0) return;
       try {
-        const resp = await fetch(`/apps/voice/sessions/${sid}/transcript`, {
+        const resp = await fetch(`/voice/sessions/${sid}/transcript`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ entries: unsynced }),
@@ -2078,7 +2078,7 @@ body {
         const unsyncedEntries = allEntries.slice(syncedCountRef.current);
         if (unsyncedEntries.length === 0) return;
         navigator.sendBeacon(
-          `/apps/voice/sessions/${sessionId}/transcript`,
+          `/voice/sessions/${sessionId}/transcript`,
           JSON.stringify({ entries: unsyncedEntries }),
         );
       };
@@ -2108,7 +2108,7 @@ body {
       setError(null);
       setIsConnecting(true);
       try {
-        const resp = await fetch(`/apps/voice/sessions/${resumeSessionId}/resume`, { method: 'POST' });
+        const resp = await fetch(`/voice/sessions/${resumeSessionId}/resume`, { method: 'POST' });
         if (!resp.ok) throw new Error(`Resume failed: ${resp.status}`);
         const resumeData = await resp.json();
         setSessionId(resumeSessionId);
@@ -2136,13 +2136,13 @@ body {
     // Keep ref current so proactive reconnect (defined above) can forward to handleResume
     handleResumeRef.current = handleResume;
 
-    // handleConnect: POST /apps/voice/sessions then initiate WebRTC
+    // handleConnect: POST /voice/sessions then initiate WebRTC
     const handleConnect = useCallback(async () => {
       setError(null);
       setIsConnecting(true);
       try {
         // Create Amplifier session on the server
-        const sessResp = await fetch('/apps/voice/sessions', {
+        const sessResp = await fetch('/voice/sessions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
         });
