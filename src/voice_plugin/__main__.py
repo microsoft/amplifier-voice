@@ -1,7 +1,7 @@
 """Standalone dev server for the voice plugin.
 
 Usage:
-    cd amplifierd-voice
+    cd amplifier-voice
     uv run --extra dev python -m voice_plugin
 
 The UI loads at http://127.0.0.1:8410/voice/

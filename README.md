@@ -1,4 +1,4 @@
-# amplifierd-voice
+# amplifier-voice
 
 Voice plugin for the [amplifierd](https://github.com/microsoft/amplifierd) daemon — WebRTC voice interface using the OpenAI Realtime API.
 
@@ -12,60 +12,51 @@ Ported from the voice app in [amplifier-distro](https://github.com/microsoft/amp
 
 ## Quick Start
 
-### Option 1: Install from GitHub (recommended)
+### Run as a standalone app
+
+Install from GitHub with the `standalone` extra, which pulls in amplifierd and everything needed to run the server:
 
 ```bash
-uv tool install amplifierd \
-  --from git+https://github.com/microsoft/amplifierd \
-  --with git+https://github.com/robotdad/amplifierd-voice
-
-amplifierd serve
-```
-
-This installs amplifierd and the voice plugin into the same tool environment. The plugin is auto-discovered via Python entry points — no configuration needed.
-
-### Option 2: Editable install for development
-
-Install amplifierd from GitHub with the voice plugin editable from a local checkout. Source changes to the voice plugin take effect on server restart — no reinstall needed.
-
-```bash
-git clone https://github.com/robotdad/amplifierd-voice
-cd amplifierd-voice
-
-uv tool install amplifierd \
-  --from git+https://github.com/microsoft/amplifierd \
-  --with-editable . \
+uv tool install amplifierd-plugin-voice \
+  --from "git+https://github.com/microsoft/amplifier-voice[standalone]" \
   --force
 
+amplifier-voice
+```
+
+Open http://127.0.0.1:8410/voice/ — the full voice UI with real session execution, delegation, and event streaming.
+
+### Run as an amplifierd plugin
+
+If you already have amplifierd installed and want to add voice as a plugin:
+
+```bash
+uv tool install amplifierd \
+  --from git+https://github.com/microsoft/amplifierd \
+  --with git+https://github.com/microsoft/amplifier-voice
+
 amplifierd serve
 ```
 
-To update amplifierd to the latest version while keeping the voice plugin editable, re-run the same command with `--force`.
+The plugin is auto-discovered via Python entry points — no configuration needed. Both `amplifier-voice` and `amplifierd serve` boot the same amplifierd platform; the difference is the entry point.
 
-### Option 3: Wrapper project
+### Editable install for development
 
-Create a `pyproject.toml` that composes amplifierd + voice into a named tool:
-
-```toml
-[project]
-name = "my-voice-experience"
-version = "0.1.0"
-requires-python = ">=3.12"
-dependencies = [
-    "amplifierd @ git+https://github.com/microsoft/amplifierd@main",
-    "amplifierd-plugin-voice @ git+https://github.com/robotdad/amplifierd-voice@main",
-]
-
-[project.scripts]
-amplifierd-voice = "amplifierd.cli:main"
-```
-
-Then:
+Clone the repo and install as an editable tool. Source changes take effect on server restart — no reinstall needed.
 
 ```bash
-uv tool install .
-amplifierd-voice serve
+git clone https://github.com/microsoft/amplifier-voice
+cd amplifier-voice
+
+uv tool install amplifierd-plugin-voice \
+  --from ".[standalone]" \
+  --editable \
+  --force
+
+amplifier-voice
 ```
+
+To update dependencies while keeping the voice plugin editable, re-run the same command.
 
 ## Configuration
 
@@ -150,7 +141,7 @@ Browser                          amplifierd + voice plugin              OpenAI
   │ <──────────────────────────────────  │ <────────────────────────────  │
   │                                      │                                │
   │  WebRTC audio (Opus) ══════════════════════════════════════════════>  │
-  │  <══════════════════════════════════════════════════════════════════  │
+  │  <════════════════════════════════════════════════════════════════════  │
   │                                      │                                │
   │  GET /voice/events (SSE)             │                                │
   │ <─────── streaming events ─────────  │                                │
@@ -168,6 +159,12 @@ Audio flows directly between the browser and OpenAI via WebRTC — the plugin ne
 - **Event streaming**: SSE stream of session events to the browser UI
 - **Transcript persistence**: Disk-backed conversation history with cross-app visibility
 - **Tool execution**: Delegate and cancel via amplifierd session handles
+
+## Theming
+
+The voice plugin ships with the [amplifier-distro](https://github.com/microsoft/amplifier-distro) brand theme — Syne/Epilogue typography, Signal Purple accent, light/dark mode with system preference detection. This means the voice UI looks identical whether running standalone or as a plugin inside amplifier-distro.
+
+Fonts are bundled as WOFF2 files in `static/fonts/` — no CDN dependency.
 
 ## API Endpoints
 
@@ -205,7 +202,7 @@ When running with amplifierd, transcripts are also mirrored to amplifierd's sess
 ## Development
 
 ```bash
-cd amplifierd-voice
+cd amplifier-voice
 uv sync --all-extras
 
 # Run tests
@@ -228,3 +225,14 @@ This plugin follows the [amplifierd plugin contract](https://github.com/microsof
 3. Uses `state.session_manager` and `state.event_bus` for daemon integration
 
 To include this in a distribution like amplifier-distro, simply add it as a dependency — the entry-point system handles the rest.
+
+## Building Standalone Apps on amplifierd
+
+This project demonstrates the pattern for building standalone apps on the amplifierd platform:
+
+1. **Write your plugin** — implement `create_router(state) -> APIRouter`
+2. **Register the entry point** — `[project.entry-points."amplifierd.plugins"]` in `pyproject.toml`
+3. **Add a CLI** — a thin `[project.scripts]` entry that boots amplifierd via `uvicorn.run("amplifierd.app:create_app", factory=True)`
+4. **Ship it** — users install with `uv tool install` and get a self-contained command
+
+The same code works as a plugin (discovered by amplifierd) and as a standalone app (the CLI boots amplifierd for you). No conditional logic, no separate code paths.
