@@ -25,7 +25,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import (
-    FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
@@ -259,13 +258,20 @@ def create_session_routes(
         workspace_root = body.get("workspace_root", str(_get_workspace_root()))
         repo = _get_repo()
 
+        # Resolve the bundle to use for the backing amplifierd session (needed
+        # by the delegate tool). Falls back to None, which triggers voice-only
+        # mode (UUID session; delegate unavailable) when no bundle is configured.
+        bundle_name: str | None = getattr(
+            getattr(state, "settings", None), "default_bundle", None
+        )
+
         conn = VoiceConnection(
             repository=repo,
             session_manager=state.session_manager,
             event_bus=state.event_bus,
             sessions_dir=sessions_dir,
         )
-        session_id = await conn.create(workspace_root)
+        session_id = await conn.create(workspace_root, bundle_name=bundle_name)
 
         conv = VoiceConversation(
             id=session_id,

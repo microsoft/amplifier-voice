@@ -34,3 +34,19 @@ def app(state, tmp_path, monkeypatch):
 @pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def reset_active_connection():
+    """Reset the module-level _active_connection between tests.
+
+    The voice plugin keeps a single global connection reference so that
+    the SSE event stream and tool routes can access it.  Tests that call
+    POST /voice/sessions set this global; without teardown, later tests
+    see stale state and can fail unexpectedly.
+    """
+    import voice_plugin.routes as _routes
+
+    _routes._active_connection = None
+    yield
+    _routes._active_connection = None

@@ -32,6 +32,46 @@ def test_status_endpoint_configured(client, monkeypatch):
     assert data["api_key_set"] is True
 
 
+def test_create_session_voice_only_mode(client):
+    """POST /voice/sessions succeeds in voice-only mode (no session_manager).
+
+    When session_manager is None the handler falls back to a plain UUID
+    (voice-only mode).  The route must respond 200, not 404.
+    """
+    resp = client.post("/voice/sessions", json={})
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
+    data = resp.json()
+    assert "session_id" in data
+    assert len(data["session_id"]) > 0
+
+
+def test_create_session_with_workspace_root(client):
+    """POST /voice/sessions accepts an optional workspace_root body field."""
+    resp = client.post(
+        "/voice/sessions",
+        json={"workspace_root": "/tmp/test-workspace"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "session_id" in data
+
+
+def test_create_session_empty_body(client):
+    """POST /voice/sessions works with no body (uses default workspace root)."""
+    resp = client.post("/voice/sessions")
+    assert resp.status_code == 200
+    assert "session_id" in resp.json()
+
+
+def test_create_session_returns_unique_ids(client):
+    """Each POST /voice/sessions call returns a distinct session_id."""
+    r1 = client.post("/voice/sessions", json={})
+    r2 = client.post("/voice/sessions", json={})
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["session_id"] != r2.json()["session_id"]
+
+
 def test_sessions_list_empty(client):
     resp = client.get("/voice/sessions")
     assert resp.status_code == 200

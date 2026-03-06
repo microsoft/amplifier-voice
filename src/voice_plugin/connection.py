@@ -49,15 +49,40 @@ class VoiceConnection:
         """The current session ID, or None if not yet created."""
         return self._session_id
 
-    async def create(self, workspace_root: str) -> str:
+    async def create(self, workspace_root: str, bundle_name: str | None = None) -> str:
         """Create a session for this voice connection via amplifierd SessionManager.
 
-        1. Creates session via session_manager.create()
-        2. Subscribes to EventBus for this session's events
-        3. Forwards events to the voice-specific event queue for SSE
+        1. Resolves bundle_name: uses the provided value, falls back to
+           ``session_manager._settings.default_bundle``, or generates a plain
+           UUID (voice-only mode) when no session manager / bundle is available.
+        2. Creates session via session_manager.create()
+        3. Subscribes to EventBus for this session's events
+        4. Forwards events to the voice-specific event queue for SSE
+
+        Voice-only mode (no amplifierd session): the WebRTC/audio path works
+        normally but the delegate tool will report "No active session".
         """
+        # Resolve bundle: explicit arg → session_manager default → None (UUID fallback)
+        if bundle_name is None and self._session_manager is not None:
+            bundle_name = getattr(
+                getattr(self._session_manager, "_settings", None),
+                "default_bundle",
+                None,
+            )
+
+        # If no session manager or no bundle configured, run in voice-only mode.
+        if self._session_manager is None or bundle_name is None:
+            from uuid import uuid4
+
+            self._session_id = str(uuid4())
+            logger.info(
+                "Voice session created in voice-only mode (no bundle configured): %s",
+                self._session_id,
+            )
+            return self._session_id
+
         handle = await self._session_manager.create(
-            bundle_name="voice",
+            bundle_name=bundle_name,
             working_dir=workspace_root,
         )
         self._handle = handle
