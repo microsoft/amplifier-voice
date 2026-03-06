@@ -1,8 +1,8 @@
 # amplifierd-voice
 
-Voice plugin for the [amplifierd](https://github.com/microsoft/amplifierd) daemon — WebRTC voice interface using the OpenAI Realtime API.
+Voice plugin for the [amplifierd](https://github.com/payneio/amplifierd) daemon — WebRTC voice interface using the OpenAI Realtime API.
 
-Ported from the voice app in [amplifier-distro](https://github.com/microsoft/amplifier-distro) to run as a standalone amplifierd plugin. Audio flows directly between the browser and OpenAI via WebRTC; the plugin handles signaling, session lifecycle, transcript persistence, and event streaming.
+Ported from the voice app in [amplifier-distro](https://github.com/payneio/amplifier-distro) to run as a standalone amplifierd plugin. Audio flows directly between the browser and OpenAI via WebRTC; the plugin handles signaling, session lifecycle, transcript persistence, and event streaming.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Ported from the voice app in [amplifier-distro](https://github.com/microsoft/amp
 ### Option 1: Install as a tool (recommended)
 
 ```bash
-uv tool install git+https://github.com/microsoft/amplifierd \
+uv tool install git+https://github.com/payneio/amplifierd \
   --with git+https://github.com/robotdad/amplifierd-voice
 
 amplifierd serve
@@ -33,7 +33,7 @@ name = "my-voice-experience"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "amplifierd @ git+https://github.com/microsoft/amplifierd@main",
+    "amplifierd @ git+https://github.com/payneio/amplifierd@main",
     "amplifierd-plugin-voice @ git+https://github.com/robotdad/amplifierd-voice@main",
 ]
 
@@ -222,7 +222,7 @@ uv run ruff check src/ tests/
 
 ## Plugin Contract
 
-This plugin follows the [amplifierd plugin contract](https://github.com/microsoft/amplifierd/blob/main/docs/plugins.md):
+This plugin follows the [amplifierd plugin contract](https://github.com/payneio/amplifierd/blob/main/docs/plugins.md):
 
 1. Declares `[project.entry-points."amplifierd.plugins"]` in `pyproject.toml`
 2. Exports `create_router(state) -> fastapi.APIRouter`
