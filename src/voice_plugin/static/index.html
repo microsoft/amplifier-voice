@@ -661,6 +661,18 @@ body {
   border-color: var(--warning);
 }
 
+.btn-respond {
+  background: var(--signal-soft);
+  color: var(--signal);
+  border: 1px solid var(--signal);
+  flex: 1;
+}
+
+.btn-respond:hover:not(:disabled) {
+  background: var(--signal);
+  color: #fff;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Secure-context error banner                                       */
 /* ------------------------------------------------------------------ */
@@ -1503,32 +1515,56 @@ body {
 
   // -------------------------------------------------------------------------
   // useMicrophoneControl({ sendDataChannelMessage })   Task 5.4
+  // Tri-state model: micState is one of 'normal' | 'paused' | 'muted'
   // -------------------------------------------------------------------------
 
   function useMicrophoneControl({ sendDataChannelMessage }) {
-    const [muted, setMuted] = useState(false);
-    const [pauseReplies, setPauseReplies] = useState(false);
+    const [micState, setMicState] = useState('normal');
+    // Ref synced via effect — lets async/stale callbacks read current state
+    const micStateRef = useRef('normal');
+    // Remembers what state we were in before muting so unmute can restore it
+    const previousStateRef = useRef('normal');
     const streamRef = useRef(null);
+
+    // Keep ref current on every render
+    useEffect(() => {
+      micStateRef.current = micState;
+    }, [micState]);
 
     // Store the mic MediaStream reference so toggleMute can reach audio tracks
     const setMicStream = useCallback((stream) => {
       streamRef.current = stream;
     }, []);
 
-    // Toggle track.enabled on all audio tracks — hardware mic stays open,
-    // but audio is silenced at the track level
+    // Toggle mute:
+    //   normal/paused → save previousState, disable audio track, set 'muted'
+    //   muted         → enable audio track, restore to previousState (default 'normal')
+    // Uses updater form of setState to avoid stale-closure on micState.
     const toggleMute = useCallback(() => {
       const stream = streamRef.current;
       if (!stream) return;
-      const nextMuted = !muted;
-      stream.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
-      setMuted(nextMuted);
-    }, [muted]);
+      setMicState((prev) => {
+        if (prev === 'muted') {
+          // Unmute: re-enable track, restore prior state
+          stream.getAudioTracks().forEach((track) => { track.enabled = true; });
+          return previousStateRef.current || 'normal';
+        } else {
+          // Mute: save current state, disable track
+          previousStateRef.current = prev;
+          stream.getAudioTracks().forEach((track) => { track.enabled = false; });
+          return 'muted';
+        }
+      });
+    }, []);
 
-    // Pause: prevent the model from auto-responding (disable create_response)
-    // Uses GA API nested path: session.audio.input.turn_detection (not beta flat path)
+    // Pause: if currently muted, unmute mic first (re-enable audio track),
+    // then send session.update with create_response: false and set state 'paused'.
+    // Uses GA API nested path: session.audio.input.turn_detection (not beta flat path).
     const enterPauseReplies = useCallback(() => {
-      setPauseReplies(true);
+      const stream = streamRef.current;
+      if (micStateRef.current === 'muted' && stream) {
+        stream.getAudioTracks().forEach((track) => { track.enabled = true; });
+      }
       sendDataChannelMessage({
         type: 'session.update',
         session: {
@@ -1536,11 +1572,11 @@ body {
           audio: { input: { turn_detection: { type: 'server_vad', create_response: false } } },
         },
       });
+      setMicState('paused');
     }, [sendDataChannelMessage]);
 
-    // Resume: re-enable auto-responses
+    // Resume: send session.update with create_response: true, set state 'normal'
     const exitPauseReplies = useCallback(() => {
-      setPauseReplies(false);
       sendDataChannelMessage({
         type: 'session.update',
         session: {
@@ -1548,9 +1584,19 @@ body {
           audio: { input: { turn_detection: { type: 'server_vad', create_response: true } } },
         },
       });
+      setMicState('normal');
     }, [sendDataChannelMessage]);
 
-    return { muted, pauseReplies, toggleMute, enterPauseReplies, exitPauseReplies, setMicStream };
+    // One-shot response while paused — useful to get an answer without fully resuming
+    const triggerResponse = useCallback(() => {
+      sendDataChannelMessage({ type: 'response.create' });
+    }, [sendDataChannelMessage]);
+
+    // Derived booleans for backward compatibility
+    const muted = micState === 'muted';
+    const pauseReplies = micState === 'paused';
+
+    return { micState, muted, pauseReplies, toggleMute, enterPauseReplies, exitPauseReplies, triggerResponse, setMicStream };
   }
 
   // -------------------------------------------------------------------------
@@ -1924,17 +1970,18 @@ body {
   }
 
   // -------------------------------------------------------------------------
-  // MicrophoneControls({ muted, pauseReplies, onToggleMute,
-  //                      onPauseReplies, onResumeReplies })   Task 5.6
-  // Two buttons: mic mute toggle (red when muted) and pause/resume toggle
-  // (amber when paused).
+  // MicrophoneControls({ micState, muted, pauseReplies, onToggleMute,
+  //                      onPauseReplies, onResumeReplies,
+  //                      onTriggerResponse })   Task 5.6
+  // Tri-state aware: normal (green mic), paused (amber), muted (red).
+  // Shows a one-shot "Respond" button only while in 'paused' state.
   // -------------------------------------------------------------------------
 
-  function MicrophoneControls({ muted, pauseReplies, onToggleMute, onPauseReplies, onResumeReplies }) {
+  function MicrophoneControls({ micState, muted, pauseReplies, onToggleMute, onPauseReplies, onResumeReplies, onTriggerResponse }) {
     return html`
       <div class="mic-controls">
         <button
-          class=${'btn btn-mic' + (muted ? ' muted' : '')}
+          class=${'btn btn-mic' + (muted ? ' muted' : (micState === 'normal' ? ' normal' : ''))}
           onClick=${onToggleMute}
           title=${muted ? 'Unmute microphone' : 'Mute microphone'}
         >
@@ -1947,6 +1994,15 @@ body {
         >
           ${pauseReplies ? '▶️ Resume' : '⏸️ Pause'}
         </button>
+        ${pauseReplies && html`
+          <button
+            class="btn btn-respond"
+            onClick=${onTriggerResponse}
+            title="Get one response without fully resuming"
+          >
+            💬 Respond
+          </button>
+        `}
       </div>
     `;
   }
@@ -2053,13 +2109,15 @@ body {
       }, []),
     });
 
-    // Task 5.4: microphone mute + pause-replies control
+    // Task 5.4: microphone mute + pause-replies control (tri-state)
     const {
+      micState,
       muted,
       pauseReplies,
       toggleMute,
       enterPauseReplies,
       exitPauseReplies,
+      triggerResponse,
       setMicStream,
     } = useMicrophoneControl({ sendDataChannelMessage });
 
@@ -2407,11 +2465,13 @@ body {
 
         ${rtcState === 'connected' && html`
           <${MicrophoneControls}
+            micState=${micState}
             muted=${muted}
             pauseReplies=${pauseReplies}
             onToggleMute=${toggleMute}
             onPauseReplies=${enterPauseReplies}
             onResumeReplies=${exitPauseReplies}
+            onTriggerResponse=${triggerResponse}
           />
           <${ConnectionHealthPanel}
             status=${healthStatus}
