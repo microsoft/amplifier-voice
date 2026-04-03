@@ -172,6 +172,10 @@ class VoiceConnection:
         # session tool calls appear in the voice delegation overlay.
         self._register_spawn_with_forwarding()
 
+        # Strip all tools except delegate — the voice agent is a pure
+        # orchestrator and must not call tools directly.
+        await self._restrict_to_delegate_only()
+
         # Subscribe to EventBus and forward events to our queue
         self._subscription_task = asyncio.create_task(
             self._forward_events(handle.session_id)
@@ -390,6 +394,50 @@ class VoiceConnection:
             "session.spawn re-registered with event forwarding for session %s",
             session_id,
         )
+
+    async def _restrict_to_delegate_only(self) -> None:
+        """Unmount all tools from the agent session except 'delegate'.
+
+        The voice agent is a pure orchestrator — its only job is to delegate
+        tasks to specialist agents and relay the results as speech.  Direct
+        tools like web_fetch, web_search, bash, and filesystem bypass
+        delegation, produce unreliable results in voice contexts, and cause
+        the agent to answer from partial or stale data instead of waiting for
+        a proper specialist agent to complete its work.
+
+        Called once during session creation, after the bundle is fully mounted.
+        """
+        if self._handle is None:
+            return
+        session = getattr(self._handle, "session", None)
+        if session is None:
+            return
+
+        coordinator = session.coordinator
+        mount_points: dict[str, Any] = coordinator.mount_points()
+        tools: Any = mount_points.get("tool", {})
+
+        if not isinstance(tools, dict):
+            logger.debug("Unexpected tool mount_points structure; skipping restriction")
+            return
+
+        removed: list[str] = []
+        for name in list(tools.keys()):
+            if name == "delegate":
+                continue
+            try:
+                await coordinator.unmount("tool", name)
+                removed.append(name)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Could not unmount tool %s from voice session", name, exc_info=True
+                )
+
+        if removed:
+            logger.info(
+                "Voice agent restricted to delegate-only; removed tools: %s",
+                ", ".join(sorted(removed)),
+            )
 
     def _cancel_subscription(self) -> None:
         """Cancel the EventBus subscription task."""
