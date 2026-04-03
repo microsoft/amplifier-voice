@@ -414,7 +414,7 @@ class VoiceConnection:
             return
 
         coordinator = session.coordinator
-        mount_points: dict[str, Any] = coordinator.mount_points()
+        mount_points: dict[str, Any] = coordinator.mount_points
         tools: Any = mount_points.get("tool", {})
 
         if not isinstance(tools, dict):
