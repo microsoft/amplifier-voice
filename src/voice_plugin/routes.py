@@ -339,6 +339,7 @@ def create_session_routes(
 
         # Re-register spawn with event forwarding for delegation UI
         conn._register_spawn_with_forwarding()
+        await conn._restrict_to_delegate_only()
 
         # Start event forwarding for the resumed session
         conn._subscription_task = asyncio.create_task(conn._forward_events(session_id))
@@ -530,7 +531,7 @@ def create_tool_routes(state: Any) -> APIRouter:
         elif state.session_manager is not None:
             handle = state.session_manager.get(session_id)
             if handle is not None:
-                handle.cancel(immediate=(level == "immediate"))
+                await handle.cancel(immediate=(level == "immediate"))
 
         return JSONResponse(content={"cancelled": True, "session_id": session_id})
 

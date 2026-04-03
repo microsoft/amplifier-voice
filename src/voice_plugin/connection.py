@@ -27,8 +27,8 @@ _CHILD_BUNDLE_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 # When the voice UI's DelegationOverlay is active, it needs three event types
 # from child sessions:  tool_call (with delegating_agent), session_fork, and
-# delegate_agent_completed.  These are produced by _ForwardingHook which is
-# appended to each child bundle spawned via the delegate tool.
+# delegate_agent_completed.  These are sourced via an EventBus subscription
+# started concurrently with spawn in spawn_fn below.
 # ---------------------------------------------------------------------------
 
 
@@ -62,31 +62,39 @@ def _map_child_event(event: str, data: dict, agent_name: str) -> dict | None:
     return None
 
 
-class _ForwardingHook:
-    """Lightweight hook appended to child bundles for delegation event forwarding."""
+async def _forward_child_events(
+    event_bus: Any,
+    child_session_id: str,
+    forwarder: Callable[[dict], None],
+    agent_name: str,
+) -> None:
+    """Subscribe to a child session's EventBus events and forward to the voice SSE stream.
 
-    name = "delegation-event-forwarder"
-    priority = 90
-
-    def __init__(
-        self,
-        forwarder: Callable[[dict], None],
-        agent_name: str,
-    ) -> None:
-        self._forwarder = forwarder
-        self._agent_name = agent_name
-
-    async def __call__(self, event: str, data: dict) -> None:
-        wire = _map_child_event(event, data, self._agent_name)
-        if wire is not None:
-            try:
-                self._forwarder(wire)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "delegation-event-forwarder: failed to forward %s",
-                    event,
-                    exc_info=True,
-                )
+    Started as a concurrent task before spawn so events are captured in real-time
+    as the child session runs.  Cancelled automatically when spawn completes.
+    """
+    try:
+        async for event in event_bus.subscribe(session_id=child_session_id):
+            if hasattr(event, "event_name") and hasattr(event, "data"):
+                wire = _map_child_event(event.event_name, event.data, agent_name)
+                if wire is not None:
+                    try:
+                        forwarder(wire)
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "delegation-event-forwarder: failed to forward %s for agent %s",
+                            event.event_name,
+                            agent_name,
+                            exc_info=True,
+                        )
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "Child event forwarding ended for session %s agent %s",
+            child_session_id,
+            agent_name,
+        )
 
 
 class VoiceConnection:
@@ -164,6 +172,10 @@ class VoiceConnection:
         # session tool calls appear in the voice delegation overlay.
         self._register_spawn_with_forwarding()
 
+        # Strip all tools except delegate — the voice agent is a pure
+        # orchestrator and must not call tools directly.
+        await self._restrict_to_delegate_only()
+
         # Subscribe to EventBus and forward events to our queue
         self._subscription_task = asyncio.create_task(
             self._forward_events(handle.session_id)
@@ -224,7 +236,7 @@ class VoiceConnection:
         """Cancel the running session."""
         if self._handle is not None:
             immediate = level == "immediate"
-            self._handle.cancel(immediate=immediate)
+            await self._handle.cancel(immediate=immediate)
 
     async def execute(self, prompt: str) -> str:
         """Execute a prompt on the session (for delegate tool)."""
@@ -238,12 +250,16 @@ class VoiceConnection:
     # ------------------------------------------------------------------
 
     def _register_spawn_with_forwarding(self) -> None:
-        """Re-register ``session.spawn`` with a forwarding hook for delegation UI.
+        """Re-register ``session.spawn`` with child-event forwarding for delegation UI.
 
-        amplifierd registers a basic ``session.spawn`` capability during
-        session creation.  This method replaces it with one that attaches a
-        ``_ForwardingHook`` to every child bundle, so child tool calls and
+        amplifierd registers a basic ``session.spawn`` capability during session
+        creation.  This method replaces it with one that subscribes to each child
+        session's EventBus events concurrently with spawn, so child tool calls and
         completion events are forwarded to the voice SSE stream.
+
+        Child events are forwarded via EventBus subscription rather than hook
+        injection into Bundle.hooks — Bundle.hooks only accepts module config
+        dicts (``{"module": "..."}``), not callable objects.
         """
         if self._handle is None:
             return
@@ -266,6 +282,7 @@ class VoiceConnection:
 
         coordinator = session.coordinator
         session_id = self._handle.session_id
+        event_bus = self._event_bus
 
         def event_forwarder(wire_dict: dict) -> None:
             self._event_queue.put_nowait(wire_dict)
@@ -311,12 +328,10 @@ class VoiceConnection:
                     f"Agent '{agent_name}' not found. Available: {available}"
                 )
 
-            # --- Build hooks with forwarding hook ---
-            _base_hooks: list = list(config.get("hooks", []))
-            _child_hooks = [
-                *_base_hooks,
-                _ForwardingHook(event_forwarder, agent_name),
-            ]
+            # --- Build child bundle ---
+            # Bundle.hooks only accepts module config dicts; child event forwarding
+            # is handled via EventBus subscription below.
+            _child_hooks: list = list(config.get("hooks", []))
 
             child_bundle = Bundle(
                 name=agent_name,
@@ -331,29 +346,98 @@ class VoiceConnection:
                 ),
             )
 
+            # --- Pre-determine child session ID for EventBus subscription ---
+            from uuid import uuid4 as _uuid4
+
+            effective_sub_session_id = sub_session_id or str(_uuid4())
+
             logger.debug(
                 "Spawning sub-session: agent=%s session_id=%s parent=%s",
                 agent_name,
-                sub_session_id,
+                effective_sub_session_id,
                 session_id,
             )
 
-            return await prepared.spawn(
-                child_bundle=child_bundle,
-                instruction=instruction,
-                session_id=sub_session_id,
-                parent_session=parent_session,
-                orchestrator_config=orchestrator_config,
-                parent_messages=parent_messages,
-                provider_preferences=provider_preferences,
-                self_delegation_depth=self_delegation_depth,
-            )
+            # --- Subscribe to child events concurrently with spawn ---
+            # Starting the task before spawn ensures we don't miss early events
+            # (e.g. session:fork) that fire as the child session initialises.
+            forward_task: asyncio.Task[None] | None = None
+            if event_bus is not None:
+                forward_task = asyncio.create_task(
+                    _forward_child_events(
+                        event_bus,
+                        effective_sub_session_id,
+                        event_forwarder,
+                        agent_name,
+                    )
+                )
+
+            try:
+                return await prepared.spawn(
+                    child_bundle=child_bundle,
+                    instruction=instruction,
+                    session_id=effective_sub_session_id,
+                    parent_session=parent_session,
+                    orchestrator_config=orchestrator_config,
+                    parent_messages=parent_messages,
+                    provider_preferences=provider_preferences,
+                    self_delegation_depth=self_delegation_depth,
+                )
+            finally:
+                if forward_task is not None:
+                    forward_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await forward_task
 
         coordinator.register_capability("session.spawn", spawn_fn)
         logger.info(
             "session.spawn re-registered with event forwarding for session %s",
             session_id,
         )
+
+    async def _restrict_to_delegate_only(self) -> None:
+        """Unmount all tools from the agent session except 'delegate'.
+
+        The voice agent is a pure orchestrator — its only job is to delegate
+        tasks to specialist agents and relay the results as speech.  Direct
+        tools like web_fetch, web_search, bash, and filesystem bypass
+        delegation, produce unreliable results in voice contexts, and cause
+        the agent to answer from partial or stale data instead of waiting for
+        a proper specialist agent to complete its work.
+
+        Called once during session creation, after the bundle is fully mounted.
+        """
+        if self._handle is None:
+            return
+        session = getattr(self._handle, "session", None)
+        if session is None:
+            return
+
+        coordinator = session.coordinator
+        mount_points: dict[str, Any] = coordinator.mount_points
+        tools: Any = mount_points.get("tools", {})
+
+        if not isinstance(tools, dict):
+            logger.debug("Unexpected tool mount_points structure; skipping restriction")
+            return
+
+        removed: list[str] = []
+        for name in list(tools.keys()):
+            if name == "delegate":
+                continue
+            try:
+                await coordinator.unmount("tools", name)
+                removed.append(name)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Could not unmount tool %s from voice session", name, exc_info=True
+                )
+
+        if removed:
+            logger.info(
+                "Voice agent restricted to delegate-only; removed tools: %s",
+                ", ".join(sorted(removed)),
+            )
 
     def _cancel_subscription(self) -> None:
         """Cancel the EventBus subscription task."""
