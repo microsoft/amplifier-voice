@@ -426,7 +426,7 @@ class VoiceConnection:
             if name == "delegate":
                 continue
             try:
-                await coordinator.unmount("tool", name)
+                await coordinator.unmount("tools", name)
                 removed.append(name)
             except Exception:  # noqa: BLE001
                 logger.warning(
