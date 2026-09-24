@@ -88,6 +88,7 @@ config:
 | `AMPLIFIER_VOICE_VOICE` | `ash` | Voice persona (ash, ballad, coral, sage, verse) |
 | `AMPLIFIER_VOICE_INSTRUCTIONS` | `""` | System instructions for the voice session |
 | `AMPLIFIER_VOICE_ASSISTANT_NAME` | `Amplifier` | Display name in the UI |
+| `AMPLIFIER_WORKSPACE_ROOT` | User home directory | Trusted working directory for amplifierd sessions; browser requests cannot override it |
 | `VOICE_PLUGIN_HOME_DIR` | `~/.amplifier-voice` | Where voice session data is stored |
 
 ### Optional: Daemon Settings
@@ -123,6 +124,11 @@ open http://127.0.0.1:8410/voice/
 ```
 
 The daemon logs will show `Mounted plugin: voice` on startup if the plugin was discovered successfully.
+
+The voice UI receives a random capability when `/voice/` loads and sends it on
+session-control requests. Restarting the daemon invalidates capabilities held by
+open tabs, so reload the page after a restart. Keep the default loopback bind
+unless the daemon is placed behind an authenticated, trusted reverse proxy.
 
 ## How It Works
 

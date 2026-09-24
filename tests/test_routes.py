@@ -1,5 +1,10 @@
 """Route-level tests for the voice plugin."""
 
+from pathlib import Path
+
+from voice_plugin.connection import VoiceConnection
+from voice_plugin.routes import _VOICE_CAPABILITY_TOKEN
+
 
 def test_health_endpoint(client):
     resp = client.get("/voice/health")
@@ -45,15 +50,38 @@ def test_create_session_voice_only_mode(client):
     assert len(data["session_id"]) > 0
 
 
-def test_create_session_with_workspace_root(client):
-    """POST /voice/sessions accepts an optional workspace_root body field."""
+def test_create_session_rejects_client_workspace_root(client):
+    """The working directory is server-controlled."""
     resp = client.post(
         "/voice/sessions",
         json={"workspace_root": "/tmp/test-workspace"},
     )
+    assert resp.status_code == 400
+    assert "configured by the server" in resp.json()["error"]
+
+
+def test_create_session_uses_configured_workspace(
+    client, monkeypatch, tmp_path
+):
+    configured_workspace = tmp_path / "trusted-workspace"
+    configured_workspace.mkdir()
+    monkeypatch.setenv("AMPLIFIER_WORKSPACE_ROOT", str(configured_workspace))
+    received: dict[str, str] = {}
+
+    async def capture_create(
+        self: VoiceConnection,
+        workspace_root: str,
+        bundle_name: str | None = None,
+    ) -> str:
+        received["workspace_root"] = workspace_root
+        return "trusted-session"
+
+    monkeypatch.setattr(VoiceConnection, "create", capture_create)
+
+    resp = client.post("/voice/sessions", json={})
+
     assert resp.status_code == 200
-    data = resp.json()
-    assert "session_id" in data
+    assert Path(received["workspace_root"]) == configured_workspace.resolve()
 
 
 def test_create_session_empty_body(client):
@@ -114,6 +142,103 @@ def test_tool_delegate_no_session(client):
     )
     assert resp.status_code == 400
     assert "No active" in resp.json()["error"]
+
+
+def test_session_and_tool_routes_require_authorization(unauthenticated_client):
+    create_resp = unauthenticated_client.post("/voice/sessions", json={})
+    tool_resp = unauthenticated_client.post(
+        "/voice/tools/execute",
+        json={
+            "name": "delegate",
+            "arguments": {"instruction": "test"},
+            "session_id": "session-1",
+        },
+    )
+
+    assert create_resp.status_code == 401
+    assert tool_resp.status_code == 401
+
+
+def test_tool_execute_rejects_cross_origin(client):
+    resp = client.post(
+        "/voice/tools/execute",
+        headers={"Origin": "https://attacker.example"},
+        json={
+            "name": "delegate",
+            "arguments": {"instruction": "test"},
+            "session_id": "session-1",
+        },
+    )
+
+    assert resp.status_code == 403
+
+
+def test_tool_execute_rejects_text_plain(client):
+    resp = client.post(
+        "/voice/tools/execute",
+        content='{"name":"delegate","arguments":{"instruction":"test"}}',
+        headers={"Content-Type": "text/plain"},
+    )
+
+    assert resp.status_code == 415
+
+
+def test_tool_execute_rejects_other_session(client, monkeypatch):
+    class FakeConnection:
+        session_id = "active-session"
+
+        async def execute(self, instruction):
+            raise AssertionError("execute must not be called")
+
+    import voice_plugin.routes as routes
+
+    monkeypatch.setattr(routes, "_active_connection", FakeConnection())
+    resp = client.post(
+        "/voice/tools/execute",
+        json={
+            "name": "delegate",
+            "arguments": {"instruction": "test"},
+            "session_id": "other-session",
+        },
+    )
+
+    assert resp.status_code == 403
+
+
+def test_tool_execute_allows_active_session(client, monkeypatch):
+    class FakeConnection:
+        session_id = "active-session"
+
+        async def execute(self, instruction):
+            return f"executed: {instruction}"
+
+    import voice_plugin.routes as routes
+
+    monkeypatch.setattr(routes, "_active_connection", FakeConnection())
+    resp = client.post(
+        "/voice/tools/execute",
+        json={
+            "name": "delegate",
+            "arguments": {"instruction": "test"},
+            "session_id": "active-session",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"result": "executed: test"}
+
+
+def test_index_injects_voice_capability(unauthenticated_client):
+    resp = unauthenticated_client.get("/voice/")
+
+    assert resp.status_code == 200
+    assert (
+        f'<meta name="voice-token" content="{_VOICE_CAPABILITY_TOKEN}">'
+        in resp.text
+    )
+    assert resp.headers["cache-control"] == "no-store"
+    assert "HttpOnly" in resp.headers["set-cookie"]
+    assert "SameSite=strict" in resp.headers["set-cookie"]
 
 
 def test_cancel_invalid_level(client):

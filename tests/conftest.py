@@ -33,6 +33,19 @@ def app(state, tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(app):
+    from voice_plugin.routes import (
+        _VOICE_CAPABILITY_HEADER,
+        _VOICE_CAPABILITY_TOKEN,
+    )
+
+    return TestClient(
+        app,
+        headers={_VOICE_CAPABILITY_HEADER: _VOICE_CAPABILITY_TOKEN},
+    )
+
+
+@pytest.fixture
+def unauthenticated_client(app):
     return TestClient(app)
 
 
