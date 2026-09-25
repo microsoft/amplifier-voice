@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 
 def create_router(state: Any) -> APIRouter:
@@ -14,6 +14,7 @@ def create_router(state: Any) -> APIRouter:
         create_static_routes,
         create_tool_routes,
     )
+    from voice_plugin.security import origin_guard
 
     settings = VoicePluginSettings()
     settings.home_dir.mkdir(parents=True, exist_ok=True)
@@ -23,14 +24,14 @@ def create_router(state: Any) -> APIRouter:
         getattr(state, "settings", None), "sessions_dir", None
     )
 
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(origin_guard(settings.public_origin))])
 
     @router.get("/voice/health", tags=["voice"])
     async def voice_health():
         return {"status": "ok", "plugin": "voice"}
 
     router.include_router(
-        create_static_routes()
+        create_static_routes(settings)
     )
     router.include_router(
         create_signaling_routes(settings)
@@ -43,6 +44,6 @@ def create_router(state: Any) -> APIRouter:
         )
     )
     router.include_router(
-        create_tool_routes(state=state)
+        create_tool_routes(state=state, settings=settings)
     )
     return router

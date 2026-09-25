@@ -4,13 +4,22 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+from voice_plugin.security import canonical_origin
 
 
 class VoicePluginSettings(BaseSettings):
     home_dir: Path = Path.home() / ".amplifier-voice"
+    public_origin: str = "http://127.0.0.1:8410"
 
     model_config = {"env_prefix": "VOICE_PLUGIN_"}
+
+    @field_validator("public_origin")
+    @classmethod
+    def validate_public_origin(cls, value: str) -> str:
+        return canonical_origin(value)
 
 
 # ---------------------------------------------------------------------------

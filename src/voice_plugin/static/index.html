@@ -1921,8 +1921,8 @@ body {
 
   // -------------------------------------------------------------------------
   // StopButton({ sessionId, runningTools, onStop })   Task 5.6
-  // Single click  → graceful cancel (immediate:false)
-  // Double click (<400 ms) → hard cancel  (immediate:true)
+  // Single click  → graceful cancel (level:'graceful')
+  // Double click (<400 ms) → hard cancel  (level:'immediate')
   // Label: 'Stop ({toolName})' while tool is running, 'Stopping...' during cancel.
   // -------------------------------------------------------------------------
 
@@ -1944,11 +1944,15 @@ body {
 
       setCancelling(true);
       try {
-        await fetch('/voice/cancel', {
+        const response = await fetch('/voice/cancel', {
           method: 'POST',
           headers: voiceHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ session_id: sessionId, immediate }),
+          body: JSON.stringify({
+            session_id: sessionId,
+            level: immediate ? 'immediate' : 'graceful',
+          }),
         });
+        if (!response.ok) throw new Error(`Cancel rejected (${response.status})`);
         if (onStop) onStop();
       } catch (err) {
         console.error('[StopButton] Cancel request failed:', err);

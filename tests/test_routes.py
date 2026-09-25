@@ -141,7 +141,7 @@ def test_tool_delegate_no_session(client):
         json={"name": "delegate", "arguments": {"instruction": "test"}},
     )
     assert resp.status_code == 400
-    assert "No active" in resp.json()["error"]
+    assert "No active" in resp.json()["detail"]
 
 
 def test_session_and_tool_routes_require_authorization(unauthenticated_client):
