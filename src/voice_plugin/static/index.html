@@ -720,6 +720,11 @@ body {
   const { h, render, Fragment } = window.preact;
   const { useState, useEffect, useRef, useCallback } = window.preactHooks;
   const html = window.html;
+  const voiceToken = document.querySelector('meta[name="voice-token"]').content;
+  const voiceHeaders = (headers = {}) => ({
+    ...headers,
+    'X-Voice-Token': voiceToken,
+  });
 
   // -------------------------------------------------------------------------
   // useWebRTC({ onMessage, onStateChange })
@@ -757,7 +762,9 @@ body {
       // Step 1: Fetch ephemeral token from backend
       let token;
       try {
-        const resp = await fetch('/voice/session');
+        const resp = await fetch('/voice/session', {
+          headers: voiceHeaders(),
+        });
         if (!resp.ok) throw new Error(`Session token fetch failed: ${resp.status}`);
         const data = await resp.json();
         token = data.client_secret.value;
@@ -1295,7 +1302,7 @@ body {
         try {
           const resp = await fetch('/voice/tools/execute', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: voiceHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
               name: toolName,
               arguments: typeof args === 'string' ? JSON.parse(args) : args,
@@ -1863,7 +1870,7 @@ body {
     const [sessions, setSessions] = useState(null);
 
     useEffect(() => {
-      fetch('/voice/sessions')
+      fetch('/voice/sessions', { headers: voiceHeaders() })
         .then((r) => r.json())
         .then((data) => {
           const list = Array.isArray(data) ? data : (data.sessions || []);
@@ -1914,8 +1921,8 @@ body {
 
   // -------------------------------------------------------------------------
   // StopButton({ sessionId, runningTools, onStop })   Task 5.6
-  // Single click  → graceful cancel (immediate:false)
-  // Double click (<400 ms) → hard cancel  (immediate:true)
+  // Single click  → graceful cancel (level:'graceful')
+  // Double click (<400 ms) → hard cancel  (level:'immediate')
   // Label: 'Stop ({toolName})' while tool is running, 'Stopping...' during cancel.
   // -------------------------------------------------------------------------
 
@@ -1937,11 +1944,15 @@ body {
 
       setCancelling(true);
       try {
-        await fetch('/voice/cancel', {
+        const response = await fetch('/voice/cancel', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId, immediate }),
+          headers: voiceHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            session_id: sessionId,
+            level: immediate ? 'immediate' : 'graceful',
+          }),
         });
+        if (!response.ok) throw new Error(`Cancel rejected (${response.status})`);
         if (onStop) onStop();
       } catch (err) {
         console.error('[StopButton] Cancel request failed:', err);
@@ -2218,7 +2229,7 @@ body {
       try {
         const resp = await fetch(`/voice/sessions/${sid}/transcript`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: voiceHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ entries: unsynced }),
         });
         if (resp.ok) {
@@ -2229,7 +2240,7 @@ body {
       }
     }, []);
 
-    // Task 5.6: sendBeacon on page unload — last-resort flush of unsynced entries.
+    // Task 5.6: keepalive fetch on page unload — last-resort flush of unsynced entries.
     // Only sends entries not already persisted by the periodic sync.
     useEffect(() => {
       if (!sessionId) return;
@@ -2240,10 +2251,12 @@ body {
         // Only send what the periodic sync hasn't already persisted
         const unsyncedEntries = allEntries.slice(syncedCountRef.current);
         if (unsyncedEntries.length === 0) return;
-        navigator.sendBeacon(
-          `/voice/sessions/${sessionId}/transcript`,
-          JSON.stringify({ entries: unsyncedEntries }),
-        );
+        fetch(`/voice/sessions/${sessionId}/transcript`, {
+          method: 'POST',
+          headers: voiceHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ entries: unsyncedEntries }),
+          keepalive: true,
+        });
       };
 
       window.addEventListener('beforeunload', handleBeforeUnload);
@@ -2271,7 +2284,10 @@ body {
       setError(null);
       setIsConnecting(true);
       try {
-        const resp = await fetch(`/voice/sessions/${resumeSessionId}/resume`, { method: 'POST' });
+        const resp = await fetch(`/voice/sessions/${resumeSessionId}/resume`, {
+          method: 'POST',
+          headers: voiceHeaders(),
+        });
         if (!resp.ok) throw new Error(`Resume failed: ${resp.status}`);
         const resumeData = await resp.json();
         setSessionId(resumeSessionId);
@@ -2307,7 +2323,7 @@ body {
         // Create Amplifier session on the server
         const sessResp = await fetch('/voice/sessions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: voiceHeaders({ 'Content-Type': 'application/json' }),
         });
         if (!sessResp.ok) {
           throw new Error(`Failed to create session: ${sessResp.status}`);

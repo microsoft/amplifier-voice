@@ -33,7 +33,21 @@ def app(state, tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(app):
-    return TestClient(app)
+    from voice_plugin.routes import (
+        _VOICE_CAPABILITY_HEADER,
+        _VOICE_CAPABILITY_TOKEN,
+    )
+
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8410",
+        headers={_VOICE_CAPABILITY_HEADER: _VOICE_CAPABILITY_TOKEN},
+    )
+
+
+@pytest.fixture
+def unauthenticated_client(app):
+    return TestClient(app, base_url="http://127.0.0.1:8410")
 
 
 @pytest.fixture(autouse=True)

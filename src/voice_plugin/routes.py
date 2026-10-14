@@ -14,16 +14,18 @@ Route groups:
 from __future__ import annotations
 
 import asyncio
+import html
 import json as _json
 import logging
 import os
 import re
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -34,12 +36,16 @@ from fastapi.responses import (
 
 from voice_plugin.config import VoicePluginSettings, get_instructions, get_voice_config
 from voice_plugin.connection import VoiceConnection
+from voice_plugin.security import origin_guard, single_header
 from voice_plugin.transcript.models import TranscriptEntry, VoiceConversation
 from voice_plugin.transcript.repository import VoiceConversationRepository
 
 logger = logging.getLogger(__name__)
 
 _VALID_SESSION_ID = re.compile(r"^[a-zA-Z0-9_\-]+$")
+_VOICE_CAPABILITY_HEADER = "X-Voice-Token"
+_VOICE_CAPABILITY_COOKIE = "voice_token"
+_VOICE_CAPABILITY_TOKEN = secrets.token_urlsafe(32)
 
 # Module-level state: single-user, no parallel voice sessions
 _active_connection: VoiceConnection | None = None
@@ -57,20 +63,77 @@ def _get_workspace_root() -> Path:
     return Path.home()
 
 
+def _authorize_voice_request(
+    request: Request,
+    *,
+    allow_cookie_token: bool = False,
+    require_json: bool = False,
+) -> None:
+    supplied_token = single_header(request, _VOICE_CAPABILITY_HEADER)
+    if allow_cookie_token:
+        cookie = single_header(request, "cookie") or ""
+        # Reject ambiguous duplicate capabilities even within one Cookie line.
+        tokens = [
+            part.strip().partition("=")[2]
+            for part in cookie.split(";")
+            if part.strip().partition("=")[0] == _VOICE_CAPABILITY_COOKIE
+        ]
+        if len(tokens) > 1:
+            raise HTTPException(status_code=400, detail="Duplicate voice cookie")
+        if supplied_token is None:
+            supplied_token = tokens[0] if tokens else ""
+
+    if not secrets.compare_digest(supplied_token or "", _VOICE_CAPABILITY_TOKEN):
+        raise HTTPException(status_code=401, detail="Voice authorization required")
+
+    if require_json:
+        content_type = (
+            (single_header(request, "content-type") or "").partition(";")[0].lower()
+        )
+        content_length = single_header(request, "content-length")
+        if content_type != "application/json" and content_length not in (None, "0"):
+            raise HTTPException(
+                status_code=415,
+                detail="Content-Type must be application/json",
+            )
+
+
 # ---------------------------------------------------------------------------
 # Static routes
 # ---------------------------------------------------------------------------
 
 
-def create_static_routes() -> APIRouter:
+def create_static_routes(settings: VoicePluginSettings | None = None) -> APIRouter:
     """Serve the voice UI static files."""
-    router = APIRouter()
+    settings = settings or VoicePluginSettings()
+    router = APIRouter(dependencies=[Depends(origin_guard(settings.public_origin))])
 
     @router.get("/voice/", response_class=HTMLResponse, tags=["voice"])
-    async def index() -> HTMLResponse:
+    async def index(request: Request) -> HTMLResponse:
         html_path = Path(__file__).parent / "static" / "index.html"
         if html_path.exists():
-            return HTMLResponse(content=html_path.read_text())
+            page = html_path.read_text(encoding="utf-8").replace(
+                "<head>",
+                (
+                    "<head>\n"
+                    f'<meta name="voice-token" content="'
+                    f'{html.escape(_VOICE_CAPABILITY_TOKEN, quote=True)}">'
+                ),
+                1,
+            )
+            response = HTMLResponse(
+                content=page,
+                headers={"Cache-Control": "no-store"},
+            )
+            response.set_cookie(
+                key=_VOICE_CAPABILITY_COOKIE,
+                value=_VOICE_CAPABILITY_TOKEN,
+                httponly=True,
+                secure=settings.public_origin.startswith("https://"),
+                samesite="strict",
+                path="/voice",
+            )
+            return response
         return HTMLResponse(
             content=(
                 "<!-- Voice UI not built yet -->"
@@ -122,7 +185,7 @@ def create_static_routes() -> APIRouter:
 
 def create_signaling_routes(settings: VoicePluginSettings) -> APIRouter:
     """OpenAI Realtime API signaling: client_secret + SDP relay."""
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(origin_guard(settings.public_origin))])
 
     @router.get("/voice/api/status", tags=["voice"])
     async def voice_status() -> JSONResponse:
@@ -139,8 +202,9 @@ def create_signaling_routes(settings: VoicePluginSettings) -> APIRouter:
         )
 
     @router.get("/voice/session", tags=["voice"])
-    async def create_session_token() -> JSONResponse:
+    async def create_session_token(request: Request) -> JSONResponse:
         """Return ephemeral client_secret for the GA Realtime API."""
+        _authorize_voice_request(request)
         from voice_plugin import realtime as rt
 
         vcfg = get_voice_config()
@@ -162,7 +226,7 @@ def create_signaling_routes(settings: VoicePluginSettings) -> APIRouter:
                 status_code=400, content={"error": "SDP offer body required"}
             )
 
-        auth = request.headers.get("authorization", "")
+        auth = single_header(request, "authorization") or ""
         if not auth.startswith("Bearer "):
             return JSONResponse(
                 status_code=401,
@@ -195,7 +259,7 @@ def create_session_routes(
     sessions_dir: Path | None,
 ) -> APIRouter:
     """Session management: create, resume, transcript sync, end, list."""
-    router = APIRouter()
+    router = APIRouter(dependencies=[Depends(origin_guard(settings.public_origin))])
 
     def _get_repo() -> VoiceConversationRepository:
         return VoiceConversationRepository(
@@ -206,6 +270,7 @@ def create_session_routes(
     @router.get("/voice/events", tags=["voice"])
     async def events_stream(request: Request) -> StreamingResponse:
         """SSE event stream from the active VoiceConnection."""
+        _authorize_voice_request(request, allow_cookie_token=True)
 
         async def _generate():
             try:
@@ -253,13 +318,20 @@ def create_session_routes(
     async def create_session(request: Request) -> JSONResponse:
         """Create an amplifierd session and wire it to a VoiceConnection."""
         global _active_connection
+        _authorize_voice_request(request, require_json=True)
 
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
             body = {}
 
-        workspace_root = body.get("workspace_root", str(_get_workspace_root()))
+        if "workspace_root" in body:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "workspace_root is configured by the server"},
+            )
+
+        workspace_root = str(_get_workspace_root())
         repo = _get_repo()
 
         # Resolve the bundle to use for the backing amplifierd session (needed
@@ -300,10 +372,19 @@ def create_session_routes(
         request: Request,
     ) -> JSONResponse:
         """Reconnect after a disconnect; returns fresh client_secret + context."""
+        _authorize_voice_request(request, require_json=True)
         _validate_session_id(session_id)
         global _active_connection
 
         repo = _get_repo()
+        # Do not let resume turn an arbitrary daemon handle into an authorized
+        # "active voice" connection (which would bypass the tool/cancel scope).
+        if repo.get_conversation(session_id) is None:
+            raise HTTPException(status_code=404, detail="Voice session not found")
+        if state.session_manager is None:
+            raise HTTPException(
+                status_code=503, detail="Session resume requires amplifierd"
+            )
         context = repo.get_resumption_context(session_id)
 
         # Obtain a fresh ephemeral token
@@ -359,6 +440,7 @@ def create_session_routes(
         request: Request,
     ) -> JSONResponse:
         """Batch-add TranscriptEntry records for a session."""
+        _authorize_voice_request(request, require_json=True)
         _validate_session_id(session_id)
 
         try:
@@ -402,6 +484,7 @@ def create_session_routes(
         request: Request,
     ) -> JSONResponse:
         """End a session permanently."""
+        _authorize_voice_request(request, require_json=True)
         _validate_session_id(session_id)
         global _active_connection
 
@@ -432,14 +515,16 @@ def create_session_routes(
         return JSONResponse(content={"ended": True, "session_id": session_id})
 
     @router.get("/voice/sessions", tags=["voice"])
-    async def list_sessions() -> JSONResponse:
+    async def list_sessions(request: Request) -> JSONResponse:
         """Return the list of VoiceConversations from the repository index."""
+        _authorize_voice_request(request)
         repo = _get_repo()
         return JSONResponse(content=repo.list_conversations())
 
     @router.get("/voice/sessions/stats", tags=["voice"])
-    async def sessions_stats() -> JSONResponse:
+    async def sessions_stats(request: Request) -> JSONResponse:
         """Return aggregate statistics across all voice sessions."""
+        _authorize_voice_request(request)
         repo = _get_repo()
         conversations = repo.list_conversations()
         by_status: dict[str, int] = {}
@@ -461,27 +546,49 @@ def create_session_routes(
 # ---------------------------------------------------------------------------
 
 
-def create_tool_routes(state: Any) -> APIRouter:
+def _active_session(session_id: Any) -> VoiceConnection:
+    """Capture and authorize one connection before awaiting any operation."""
+    conn = _active_connection
+    if conn is None or conn.session_id is None:
+        raise HTTPException(status_code=400, detail="No active voice session")
+    if not isinstance(session_id, str) or session_id != conn.session_id:
+        raise HTTPException(
+            status_code=403, detail="Request does not match active session"
+        )
+    return conn
+
+
+def create_tool_routes(
+    state: Any, settings: VoicePluginSettings | None = None
+) -> APIRouter:
     """Voice tool execution: delegate and cancel."""
-    router = APIRouter()
+    settings = settings or VoicePluginSettings()
+    router = APIRouter(dependencies=[Depends(origin_guard(settings.public_origin))])
 
     @router.post("/voice/tools/execute", tags=["voice"])
     async def execute_tool(request: Request) -> JSONResponse:
         """Execute a voice tool on behalf of the active voice session."""
+        _authorize_voice_request(request, require_json=True)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
             return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
 
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400, content={"error": "Body must be an object"}
+            )
         name: str = body.get("name", "")
         arguments: dict[str, Any] = body.get("arguments", {})
+        if not isinstance(arguments, dict):
+            return JSONResponse(
+                status_code=400, content={"error": "arguments must be an object"}
+            )
 
         if not name:
             return JSONResponse(
                 status_code=400, content={"error": "Missing 'name' field"}
             )
-
-        conn = _active_connection
 
         if name == "delegate":
             instruction = arguments.get("instruction", "")
@@ -490,20 +597,12 @@ def create_tool_routes(state: Any) -> APIRouter:
                     status_code=400,
                     content={"error": "instruction required for delegate"},
                 )
-            if conn is None or conn.session_id is None:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "No active voice session"},
-                )
+            conn = _active_session(body.get("session_id"))
             result = await conn.execute(instruction)
             return JSONResponse(content={"result": result})
 
         if name == "cancel_current_task":
-            if conn is None:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "No active voice session"},
-                )
+            conn = _active_session(body.get("session_id"))
             await conn.cancel()
             return JSONResponse(content={"result": "cancelled"})
 
@@ -512,11 +611,16 @@ def create_tool_routes(state: Any) -> APIRouter:
     @router.post("/voice/cancel", tags=["voice"])
     async def cancel_session(request: Request) -> JSONResponse:
         """Cancel the running session."""
+        _authorize_voice_request(request, require_json=True)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
             return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
 
+        if not isinstance(body, dict):
+            return JSONResponse(
+                status_code=400, content={"error": "Body must be an object"}
+            )
         session_id: str = body.get("session_id", "")
         level: str = body.get("level", "graceful")
         if level not in ("graceful", "immediate"):
@@ -525,13 +629,8 @@ def create_tool_routes(state: Any) -> APIRouter:
                 content={"error": "level must be 'graceful' or 'immediate'"},
             )
 
-        conn = _active_connection
-        if conn is not None and conn.session_id == session_id:
-            await conn.cancel(level=level)
-        elif state.session_manager is not None:
-            handle = state.session_manager.get(session_id)
-            if handle is not None:
-                await handle.cancel(immediate=(level == "immediate"))
+        conn = _active_session(session_id)
+        await conn.cancel(level=level)
 
         return JSONResponse(content={"cancelled": True, "session_id": session_id})
 

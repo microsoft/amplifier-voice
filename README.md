@@ -88,7 +88,9 @@ config:
 | `AMPLIFIER_VOICE_VOICE` | `ash` | Voice persona (ash, ballad, coral, sage, verse) |
 | `AMPLIFIER_VOICE_INSTRUCTIONS` | `""` | System instructions for the voice session |
 | `AMPLIFIER_VOICE_ASSISTANT_NAME` | `Amplifier` | Display name in the UI |
+| `AMPLIFIER_WORKSPACE_ROOT` | User home directory | Trusted working directory for amplifierd sessions; browser requests cannot override it |
 | `VOICE_PLUGIN_HOME_DIR` | `~/.amplifier-voice` | Where voice session data is stored |
+| `VOICE_PLUGIN_PUBLIC_ORIGIN` | `http://127.0.0.1:8410` | Exact browser-facing HTTP(S) origin; no path, trailing slash, wildcard, userinfo, query, or fragment |
 
 ### Optional: Daemon Settings
 
@@ -123,6 +125,69 @@ open http://127.0.0.1:8410/voice/
 ```
 
 The daemon logs will show `Mounted plugin: voice` on startup if the plugin was discovered successfully.
+
+The voice UI receives a random capability when `/voice/` loads and sends it on
+session-control requests. Restarting the daemon invalidates capabilities held by
+open tabs, so reload the page after a restart. Keep the default loopback bind
+unless the daemon is placed behind an authenticated, trusted reverse proxy.
+
+### Security migration: origin, proxy and session controls
+
+The plugin checks **Host and effective port before issuing the capability** and
+on every voice route (including static files, status, signaling and SSE). When
+an `Origin` header is present, its HTTP(S) scheme, normalized hostname and
+effective port must match `VOICE_PLUGIN_PUBLIC_ORIGIN`. Missing Origin is allowed
+for page navigation and non-browser clients; missing Host, malformed or duplicate
+Host/Origin headers, opaque `null` origins and multi-origin lists are rejected.
+Explicit default ports are equivalent (`https://voice.example:443` and
+`https://voice.example`); HTTP and HTTPS are not.
+
+The default works at **http://127.0.0.1:8410/voice/**. `localhost`, IPv6, a different
+port, or TLS requires an explicit setting, loaded once when the router is built:
+
+```bash
+# Choose exactly the URL that this instance's browser clients will use.
+VOICE_PLUGIN_PUBLIC_ORIGIN=http://localhost:9000 amplifier-voice --port 9000
+# IPv6 example (also requires a matching daemon bind):
+VOICE_PLUGIN_PUBLIC_ORIGIN='http://[::1]:8410' amplifier-voice --host ::1
+```
+
+This setting is separate from the listening address. Changing `--host`, `--port`,
+`AMPLIFIERD_PORT` or daemon settings does not expand the origin policy
+automatically. The same rule applies to `amplifierd serve` and the
+`python -m voice_plugin` development server. Invalid configuration prevents the
+voice router from loading (amplifierd may log and skip a failed plugin).
+
+For an authenticated HTTPS reverse proxy, set for example
+`VOICE_PLUGIN_PUBLIC_ORIGIN=https://voice.example` in the **server** environment.
+The proxy must restrict incoming hosts, authenticate every `/voice/` route
+(including HTML and SSE), and preserve the public `Host: voice.example` when
+forwarding to the loopback backend. Leave the browser's Origin intact. The plugin
+does not trust `Forwarded`, `X-Forwarded-Host`, or `X-Forwarded-Proto` to select an
+origin; a forwarded header cannot authorize an otherwise rejected Host.
+The configured HTTPS origin also makes the capability cookie Secure even when
+the proxy's backend transport is HTTP. Isolate the backend from direct network
+access. A Host policy/capability is **not remote-user authentication**: an HTTP
+client that can reach the backend can choose the trusted Host.
+
+Custom clients must load `/voice/` and send its `X-Voice-Token` on control requests.
+Only `/voice/events` accepts the HttpOnly, SameSite=Strict `voice_token` cookie
+instead of that header; the cookie alone cannot mutate a session. `/voice/sdp`
+retains its separate ephemeral Bearer credential as well as the origin gate.
+Reload after restart to renew both header and cookie credentials. Use one
+process/worker and one browser-facing origin per instance: active voice state and
+capabilities are process-local. Multiple daemons on the same hostname can overwrite
+the same `/voice` cookie across ports and are not supported in one browser profile.
+
+`delegate`, `cancel_current_task`, and `/voice/cancel` now require the exact active
+voice `session_id`. A stale tab cannot cancel another session or fall back to an
+arbitrary daemon handle. No-active-session requests return 400; a mismatched or
+missing ID returns 403. Resume only accepts sessions recorded in the server's voice
+repository (404 otherwise), and needs an amplifierd session manager (503 otherwise).
+This prevents promoting an unrelated daemon session into the active voice scope.
+`/voice/cancel` accepts `level: "graceful"` (default) or
+`level: "immediate"`; the UI Stop button sends that field. This is a single-user,
+single-active-session interface, not per-tab authorization or a sandbox for tools.
 
 ## How It Works
 
@@ -208,6 +273,9 @@ uv sync --all-extras
 # Run tests
 uv run pytest tests/ -v
 
+# Test the shipped Stop-button handler in-process (requires Node.js)
+node --test tests/test_stop_button.mjs
+
 # Run standalone dev server (UI and signaling work; session execution requires amplifierd)
 uv run python -m voice_plugin
 
@@ -215,6 +283,12 @@ uv run python -m voice_plugin
 uv run ruff format src/ tests/
 uv run ruff check src/ tests/
 ```
+
+The security tests use in-process HTTP/ASGI clients and synthetic provider/daemon
+handles. `test_daemon_integration.py` additionally exercises real amplifierd
+discovery when that package is installed (otherwise it skips), with server launch
+intercepted. These do not establish live browser, proxy, daemon-prewarm or audio
+compatibility.
 
 ## Plugin Contract
 
