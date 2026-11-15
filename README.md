@@ -83,6 +83,27 @@ Install a checkout with `uv sync --extra dev --extra test`, then run `uv run pyt
 The [package configuration](pyproject.toml) lists the plugin entry point and
 optional dependencies.
 
+
+<!-- ecosystem-map:start -->
+## Where this fits
+
+A WebRTC voice experience installed as an amplifierd plugin, with separately configured delegated agents.
+
+Roles: Experience. Supports: Agent Instance.
+
+![Ecosystem roles and component relationships](docs/ecosystem-map.svg)
+
+[Open the map](docs/ecosystem-map.svg) · [Product overview](https://microsoft.github.io/amplifier-constellation/projects/amplifier-voice/) · [Map guide](https://github.com/microsoft/amplifier-constellation/blob/main/docs/ecosystem-maps.md)
+
+<details>
+<summary>The five shared building blocks</summary>
+
+[![Experience, Conversation, Agent Instance, Connection and Tool](https://raw.githubusercontent.com/microsoft/amplifier-constellation/main/site/assets/art/building-blocks.png)](https://microsoft.github.io/amplifier-constellation/)
+
+</details>
+
+<!-- ecosystem-map:end -->
+
 ## Contributing
 
 Most contributions require you to agree to a

@@ -1,0 +1,106 @@
+{
+  "citations": [
+    {
+      "git_blob": "667e2f773668813ad7536f1c4b3a1c44c4922aa2",
+      "path": "README.md",
+      "ref": "e1181373fbcc75b563a49e85ee7950b7431cfbe3",
+      "sha256": "310e61374560b3e04a4df64bb49358b05cad6b50e137a6afdd142393187193c5",
+      "url": "https://github.com/microsoft/amplifier-voice/blob/e1181373fbcc75b563a49e85ee7950b7431cfbe3/README.md"
+    },
+    {
+      "git_blob": "d94062df1b13f4850ce085992502700d7d417e97",
+      "path": "pyproject.toml",
+      "ref": "e1181373fbcc75b563a49e85ee7950b7431cfbe3",
+      "sha256": "eef304e3227b5bcb66acdd425399349ddcf8d6531ac5989a78b030e745f0bf82",
+      "url": "https://github.com/microsoft/amplifier-voice/blob/e1181373fbcc75b563a49e85ee7950b7431cfbe3/pyproject.toml"
+    }
+  ],
+  "consumer_cta": {
+    "basis": "Existing approved README route; target release assets/availability not freshly audited in this plan.",
+    "label": "Read voice setup",
+    "url": "https://github.com/microsoft/amplifier-voice#get-started"
+  },
+  "display_name": "Amplifier Voice",
+  "edges": [
+    {
+      "from": "self",
+      "relation": "contains",
+      "to": "browser"
+    },
+    {
+      "from": "self",
+      "relation": "contains",
+      "to": "session"
+    },
+    {
+      "from": "daemon",
+      "relation": "integrates",
+      "to": "self"
+    },
+    {
+      "from": "browser",
+      "relation": "uses",
+      "to": "realtime"
+    },
+    {
+      "from": "self",
+      "relation": "uses",
+      "to": "agents"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "self",
+      "kind": "self",
+      "label": "Amplifier Voice",
+      "repository": "microsoft/amplifier-voice"
+    },
+    {
+      "id": "browser",
+      "kind": "internal",
+      "label": "Browser voice UI"
+    },
+    {
+      "id": "session",
+      "kind": "internal",
+      "label": "Voice sessions & transcripts"
+    },
+    {
+      "id": "daemon",
+      "kind": "external",
+      "label": "amplifierd",
+      "repository": "microsoft/amplifierd"
+    },
+    {
+      "id": "realtime",
+      "kind": "external",
+      "label": "OpenAI Realtime"
+    },
+    {
+      "id": "agents",
+      "kind": "external",
+      "label": "Configured Amplifier agents"
+    }
+  ],
+  "notes": [
+    "Audio travels directly browser-to-provider; daemon plugin manages sessions and delegation.",
+    "Not a claim that current Unified app delegates voice through this separate daemon plugin."
+  ],
+  "purpose": "Talk with Amplifier in a browser and delegate tasks through its voice interface.",
+  "ref": "e1181373fbcc75b563a49e85ee7950b7431cfbe3",
+  "repository": "microsoft/amplifier-voice",
+  "roles": [
+    "Experience"
+  ],
+  "scope": "daemon plugin experience",
+  "start_cta": {
+    "basis": "Existing approved README route; target release assets/availability not freshly audited in this plan.",
+    "label": "Read voice setup",
+    "url": "https://github.com/microsoft/amplifier-voice#get-started"
+  },
+  "summary": "A WebRTC voice experience installed as an amplifierd plugin, with separately configured delegated agents.",
+  "supports_roles": [
+    "Agent Instance"
+  ],
+  "visibility": "public"
+}
